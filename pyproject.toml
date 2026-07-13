@@ -1,0 +1,16 @@
+[project]
+name = "civitai-comfy-bridge"
+version = "0.1.0"
+description = "Downloads civitai_fetcher output and re-emits PNGs carrying synthetic ComfyUI metadata, for portfolio-explorer's indexing pipeline."
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "pillow>=10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["civitai_comfy_bridge"]
