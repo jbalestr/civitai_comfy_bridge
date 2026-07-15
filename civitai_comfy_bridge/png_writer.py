@@ -116,10 +116,28 @@ def write_png_with_prompt_chunk(
     return used_real_metadata
 
 
-def build_dest_path(data_root: Path, run_dir_name: str, model_id: int, image_id: str) -> Path:
-    """Return data_root/run_dir_name/images/{model_id}_{image_id}.png —
-    centralised here (rather than left to each caller) so downloader.py
-    and any future re-run/repair tooling construct the exact same path
-    for the exact same record.
+# Map civitai nsfwLevel string values to subdirectory names.
+# None means the field was absent — treat as unknown rather than guessing.
+_NSFW_SUBDIR: dict[str | None, str] = {
+    "Soft":   "soft",
+    "Mature": "mature",
+    "X":      "explicit",
+    None:     "unknown",
+}
+
+
+def nsfw_subdir(nsfw_level: str | None) -> str:
+    """Return the images/ subdirectory name for a given nsfwLevel value.
+    Unrecognised strings (future Civitai levels) fall back to unknown.
     """
-    return data_root / run_dir_name / "images" / f"{model_id}_{image_id}.png"
+    return _NSFW_SUBDIR.get(nsfw_level, "unknown")
+
+
+def build_dest_path(data_root: Path, run_dir_name: str, model_id: int, image_id: str, nsfw_level: str | None = None) -> Path:
+    """Return data_root/run_dir_name/images/<nsfw_subdir>/{model_id}_{image_id}.png.
+    Images are bucketed by nsfwLevel so build_index.py can ingest
+    specific subdirectories (e.g. soft + unknown only) without touching
+    mature or explicit content.
+    """
+    subdir = nsfw_subdir(nsfw_level)
+    return data_root / run_dir_name / "images" / subdir / f"{model_id}_{image_id}.png"

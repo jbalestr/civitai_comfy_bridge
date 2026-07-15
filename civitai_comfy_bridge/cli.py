@@ -71,7 +71,8 @@ def embed_pending(civitai_records: list[dict], data_root: Path) -> dict:
         # the raw file was downloaded into, e.g. "2026-07-13/raw/..."
         # -> "2026-07-13/images/...".
         run_dir_name = Path(entry["raw_path"]).parts[0]
-        dest = png_writer.build_dest_path(data_root, run_dir_name, entry["modelId"], image_id)
+        nsfw_level = entry.get("nsfwLevel") or record.get("nsfwLevel")
+        dest = png_writer.build_dest_path(data_root, run_dir_name, entry["modelId"], image_id, nsfw_level=nsfw_level)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -121,9 +122,16 @@ def main() -> None:
                          help="path to civitai_fetcher's civitai_output.json")
     parser.add_argument("--data-root", required=True, type=Path,
                          help="root folder for dated download runs + manifest.json")
+    parser.add_argument("--embed-only", action="store_true",
+                         help="skip download stage, only embed already-downloaded raw files into PNGs")
     args = parser.parse_args()
 
-    run(input_path=args.input, data_root=args.data_root)
+    civitai_records = json.loads(args.input.read_text())
+    print(f"loaded {len(civitai_records)} records from {args.input}", flush=True)
+
+    if not args.embed_only:
+        downloader.run_download(civitai_records, args.data_root)
+    embed_pending(civitai_records, args.data_root)
 
 
 if __name__ == "__main__":

@@ -129,9 +129,9 @@ def run_download(civitai_records: list[dict], data_root: Path) -> dict:
     pipeline. Do not add the failed image to the manifest, so the next
     run retries it.
     """
+    from civitai_comfy_bridge.png_writer import nsfw_subdir
     manifest = load_manifest(data_root)
-    run_dir = data_root / date.today().isoformat() / "raw"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_date = date.today().isoformat()
 
     already = len(manifest)
     is_video = lambda r: _extension_from_url(r["imageUrl"]) in _VIDEO_EXTENSIONS
@@ -147,6 +147,9 @@ def run_download(civitai_records: list[dict], data_root: Path) -> dict:
             image_id = str(rec["imageId"])
             model_id = rec["modelId"]
             ext = _extension_from_url(rec["imageUrl"])
+            subdir = nsfw_subdir(rec.get("nsfwLevel"))
+            run_dir = data_root / run_date / "raw" / subdir
+            run_dir.mkdir(parents=True, exist_ok=True)
             dest = run_dir / f"{model_id}_{image_id}{ext}"
 
             try:
@@ -176,6 +179,7 @@ def run_download(civitai_records: list[dict], data_root: Path) -> dict:
             manifest[image_id] = {
                 "raw_path": str(dest.relative_to(data_root)),
                 "modelId": model_id,
+                "nsfwLevel": rec.get("nsfwLevel"),
                 "createdAt": rec.get("createdAt"),
                 "downloaded_at": date.today().isoformat(),
                 "embedded": False,
