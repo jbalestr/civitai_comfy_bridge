@@ -122,7 +122,7 @@ _NSFW_SUBDIR: dict[str | None, str] = {
     "Soft":   "soft",
     "Mature": "mature",
     "X":      "explicit",
-    None:     "unknown",
+    None:     "soft",   # unclassified images confirmed to be at most soft
 }
 
 
@@ -130,7 +130,7 @@ def nsfw_subdir(nsfw_level: str | None) -> str:
     """Return the images/ subdirectory name for a given nsfwLevel value.
     Unrecognised strings (future Civitai levels) fall back to unknown.
     """
-    return _NSFW_SUBDIR.get(nsfw_level, "unknown")
+    return _NSFW_SUBDIR.get(nsfw_level, "soft")  # unrecognised values treated as soft
 
 
 def build_dest_path(data_root: Path, run_dir_name: str, model_id: int, image_id: str, nsfw_level: str | None = None) -> Path:

@@ -130,7 +130,7 @@ def main() -> None:
     print(f"loaded {len(civitai_records)} records from {args.input}", flush=True)
 
     if not args.embed_only:
-        downloader.run_download(civitai_records, args.data_root)
+        downloader.run_download(civitai_records, args.data_root, source_json=args.input.name)
     embed_pending(civitai_records, args.data_root)
 
 
