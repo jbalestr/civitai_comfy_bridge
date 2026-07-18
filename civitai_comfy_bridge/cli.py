@@ -16,6 +16,20 @@ Intended to be run daily/weekly against a fresh civitai_output.json
 pull. Safe to re-run against the same --data-root: already-downloaded
 images (by imageId, per downloader.py's manifest) are skipped, not
 re-fetched or duplicated.
+
+Full pipeline is three stages, each independently re-runnable:
+
+    1. download   uv run python -m civitai_comfy_bridge.cli --input ... --data-root ... --download-only
+    2. reclassify uv run python -m civitai_comfy_bridge.reclassify_cli --input ... --data-root ...
+    3. embed      uv run python -m civitai_comfy_bridge.cli --input ... --data-root ... --embed-only
+
+Stage 2 (reclassify_cli.py) recomputes each record's filter bucket
+against the current filter code, diffs it against what's actually on
+disk (data_root's manifest), writes an HTML report with thumbnails so
+you can review actual images rather than bare imageIds, and — once
+you're happy — moves already-downloaded raw files into their corrected
+bucket without re-downloading anything. See reclassify_cli.py's
+docstring for the full workflow.
 """
 
 from __future__ import annotations
@@ -124,14 +138,21 @@ def main() -> None:
                          help="root folder for dated download runs + manifest.json")
     parser.add_argument("--embed-only", action="store_true",
                          help="skip download stage, only embed already-downloaded raw files into PNGs")
+    parser.add_argument("--download-only", action="store_true",
+                         help="only download, skip the PNG-embed stage. Run reclassify_cli.py in between, "
+                              "then re-run with --embed-only for the PNG conversion")
     args = parser.parse_args()
+
+    if args.embed_only and args.download_only:
+        parser.error("--embed-only and --download-only are mutually exclusive")
 
     civitai_records = json.loads(args.input.read_text())
     print(f"loaded {len(civitai_records)} records from {args.input}", flush=True)
 
     if not args.embed_only:
         downloader.run_download(civitai_records, args.data_root, source_json=args.input.name)
-    embed_pending(civitai_records, args.data_root)
+    if not args.download_only:
+        embed_pending(civitai_records, args.data_root)
 
 
 if __name__ == "__main__":
