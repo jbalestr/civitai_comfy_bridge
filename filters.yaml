@@ -1,0 +1,40 @@
+# Add or edit filters here — no code changes needed.
+# /grid re-reads this file on every request, so just save and refresh.
+#
+# Each filter needs:
+#   name:        becomes the button label and ?view=<name> value
+#   match:       any | all | none — how to combine this filter's conditions
+#   conditions:  list of checks, each with:
+#     field:     "prompt" (free text, matched as whole words) or
+#                "resources" (lora/model names, matched exactly) or
+#                any dot-path into the metadata record (e.g. "modelName",
+#                "meta.Model", "nsfwLevel")
+#     match:     any | all | none — how this condition's own keywords combine
+#     keywords:  list of words/phrases to check for (case-insensitive)
+
+filters:
+  - name: furry
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [furry, tail, anthro, feral, scales, scaled, rabbit girl, bunny feet, animal ears, judy hopps, soft detailed fur]
+
+  - name: fur
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [fur, furry ]
+
+  # Example of a two-condition filter (AND'd together) — uncomment and
+  # adjust to try it:
+  # - name: cat_not_furry
+  #   match: all
+  #   conditions:
+  #     - field: prompt
+  #       match: any
+  #       keywords: [cat, kitten, feline]
+  #     - field: prompt
+  #       match: none
+  #       keywords: [furry, anthro]
