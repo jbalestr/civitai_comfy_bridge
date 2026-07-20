@@ -18,7 +18,7 @@ filters:
     conditions:
       - field: prompt
         match: any
-        keywords: [furry, tail, anthro, feral, scales, scaled, rabbit girl, bunny feet, animal ears, judy hopps, soft detailed fur]
+        keywords: [furry, tail, anthro, feral, scales, scaled,cat, rabbit, rabbit girl, bunny feet, cat ears, cat girl, animal ears, judy hopps, soft detailed fur]
 
   - name: fur
     match: any
@@ -26,6 +26,49 @@ filters:
       - field: prompt
         match: any
         keywords: [fur, furry ]
+
+  - name: ears
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [ pointy ear, pointy ears, elf, elven, zelda ]
+
+  - name: blood
+    match: all
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [ blood,bleed,bleeding,bloody]
+
+
+
+  - name: test
+    match: all
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [ young, cute,nubile, teen, petite, pussy ]
+      - field: prompt
+        match: any
+        keywords: [ anal, pussy,nude,naked,cum,anus,ass, nipples,spread legs,juice,sex,oral,blowjob,handjob,threesome,group,gangbang,orgy, ]
+      - field: prompt
+        match: none
+        keywords: [furry, anthro, bald, tail,scales,scaled,thick thighs, fat,lion, adult,gay,queer]
+
+
+  - name: animal
+    match: all
+    conditions:
+      - field: prompt
+        match: all
+        keywords: [ 1girl, girls, woman, women]
+      - field: prompt
+        match: any
+        keywords: [ cat, dog, rabbit, bunny, fox, wolf, animal,cow, tiger, deer ]
+      - field: prompt
+        match: none
+        keywords: [furry, anthro, 1boy, male, tail, ears, wings]
 
   # Example of a two-condition filter (AND'd together) — uncomment and
   # adjust to try it:
