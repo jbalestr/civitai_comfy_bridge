@@ -1,0 +1,114 @@
+# Pre-download content routing for downloader.py's _filter_bucket.
+# Add, remove, or edit filters here — no code changes needed.
+#
+# Filters are checked TOP TO BOTTOM; the first one that matches a
+# record wins and the record is routed to that flat review bucket
+# under data_root/ (see run_download / build_filter_summary in
+# downloader.py) instead of the normal dated nsfw-level folder.
+#
+# Each filter needs:
+#   name:        the review bucket name (becomes a folder under data_root/)
+#   match:       any | all | none — how to combine this filter's conditions
+#   conditions:  list of checks, each with:
+#     field:     "prompt" (free text, matched as whole words/phrases) or
+#                "modelName" (civitai's checkpoint name, matched as a
+#                case-insensitive SUBSTRING, not tokenized)
+#     match:     any | all | none — how this condition's own keywords combine
+#     keywords:  list of words/phrases to check for (case-insensitive)
+#
+# NOTE on "prompt" matching: keywords are matched as whole words/phrases
+# (\b<keyword>\b), same as filter_session.py's filters.yaml. A civitai
+# tag with a fused numeric prefix (e.g. "1girl", "2girls") won't match a
+# bare "girl"/"girls" keyword — list the numbered forms you care about
+# explicitly, as the solomale filter below does.
+
+filters:
+  - name: furry
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [furry, tail, anthro, feral, kemono, scales, scaled, fursona, animal]
+
+  # Bondage/restraint context — excludes clothing alone (bodysuits,
+  # latex) since those appear in superhero/villain content.
+  - name: bondage
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords:
+          - bondage
+          - posture collar
+          - posture.collar
+          - posturecollar
+          - padded room
+          - padded.room
+          - padded cell
+          - padded.cell
+          - ballgag
+          - ball gag
+          - ball.gag
+          - shackle
+
+  # Specific terms only, avoids false positives on action/fantasy.
+  # modelName condition handles models that produce horror by default
+  # regardless of prompt keywords.
+  - name: horror
+    match: any
+    conditions:
+      - field: prompt
+        match: any
+        keywords:
+          - sharp teeth
+          - sharp.teeth
+          - pointed teeth
+          - pointed.teeth
+          - monster mouth
+          - monster.mouth
+          - jagged teeth
+          - jagged.teeth
+          - eldritch
+          - gore
+          - guro
+          - body horror
+          - body.horror
+          - cosmic horror
+          - cosmic.horror
+          - sharp fangs
+          - sharp.fangs
+          - creepy
+      - field: modelName
+        match: any
+        keywords: [weallstarve]
+
+  # Must have BOTH a male tag AND explicit masculine descriptors, AND
+  # no female tag. Androgynous/femboy characters (Venti, Astolfo etc.)
+  # are tagged 1boy but lack masculine descriptors, so they correctly
+  # pass through without landing in this bucket.
+  - name: solomale
+    match: all
+    conditions:
+      - field: prompt
+        match: any
+        keywords: [1boy, male focus, gay]
+      - field: prompt
+        match: any
+        keywords: [masculine, gay, muscular, beard, chest hair, bulge, pecs, abs, stubble, facial hair]
+      - field: prompt
+        match: none
+        keywords:
+          - girl
+          - girls
+          - 1girl
+          - 2girls
+          - 3girls
+          - 4girls
+          - 5girls
+          - 6girls
+          - woman
+          - women
+          - female
+          - lady
+          - ladies
+          - waifu

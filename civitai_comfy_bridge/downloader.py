@@ -52,6 +52,7 @@ from urllib.parse import urlparse
 
 import httpx
 import re as _re
+import yaml
 
 MANIFEST_FILE = "manifest.json"
 
@@ -68,32 +69,10 @@ _VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov"}
 # what's on disk, not by trusting this extension.
 _DEFAULT_EXTENSION = ".bin"
 
-# Keywords checked against the POSITIVE prompt only.
-_FURRY_KEYWORDS = {"furry", "tail","anthro", "feral", "kemono", "scales", "scaled", "fursona", "animal"}
-
-# Bondage/restraint context — excludes clothing alone (bodysuits, latex)
-# since those appear in superhero/villain content.
-_BONDAGE_KEYWORDS = _re.compile(
-    r'\b(bondage|posture\.collar|posturecollar|padded\.room|padded\.cell|ballgag|ball\.gag|shackle)\b'
-)
-
-# Horror — specific terms only, avoids false positives on action/fantasy.
-# Model blocklist handles cases where the prompt is descriptive prose.
-_HORROR_KEYWORDS = _re.compile(
-    r'\b(sharp\.teeth|pointed\.teeth|monster\.mouth|jagged\.teeth|eldritch|'
-    r'gore|guro|body\.horror|cosmic\.horror|sharp\.fangs|creepy)\b'
-)
-
-# Model name blocklist for horror — these models produce horror by default
-# regardless of prompt keywords.
-_HORROR_MODEL_BLOCKLIST = {"weallstarve"}
-
-# Solo male — must have BOTH a male tag AND explicit masculine descriptors.
-# Androgynous/femboy characters (Venti, Astolfo etc.) are tagged 1boy but
-# lack masculine descriptors so they pass through correctly.
-_SOLO_MALE = _re.compile(r'\b(1boy|male focus|gay)\b')
-_MASCULINE = _re.compile(r'\b(masculine|gay|muscular|beard|chest hair|bulge|pecs|abs|stubble|facial hair)\b')
-_FEMALE_CHAR = _re.compile(r'\b(\d*girl|\d*girls|woman|women|female|lady|ladies|waifu)\b')
+# Pre-download content routing (furry/bondage/horror/solomale review
+# buckets, see _filter_bucket) is configured entirely in
+# DOWNLOAD_FILTERS_PATH — no keyword/regex constants live in code
+# anymore, so tuning a filter is a YAML edit, not a code change.
 
 # Buckets set aside for manual review rather than nsfw-level routing —
 # these live flat under data_root (no dated raw/ folder), and are
@@ -130,16 +109,31 @@ def _bucket_from_raw_path(raw_path_str: str) -> str:
     return ""
 
 
+_JOIN_NODE_KEYS = {
+    "StringConcatenate": ("string_a", "string_b", "delimiter"),
+    "JoinStrings": ("string1", "string2", "delimiter"),
+}
+_LITERAL_KEY_BY_CLASS = {
+    "easy positive": "positive",
+    "easy negative": "negative",
+}
+
+
 def _resolve_comfy_text(nodes: dict, value) -> str:
     """Resolve a ComfyUI widget input to its actual string value.
 
     `value` is either a literal (already the string we want) or a link
     `[node_id, output_index]` pointing at the node that produces it.
-    Recurses through StringConcatenate (joining string_a/string_b with
-    its delimiter) and generic single-"text"-input nodes (CR Text and
-    similar custom nodes all shape their prompt as a plain "text"
+    Recurses through StringConcatenate/JoinStrings, JoinStringMulti
+    (N-way join), PreviewAny (pure pass-through), ImpactWildcardProcessor
+    (resolved wildcard text sits under "populated_text", not a link at
+    all), literal text boxes like 'easy positive'/'easy negative' (text
+    sits under a 'positive'/'negative' key, not 'text'), TriggerWord
+    Toggle (LoraManager), and generic single-"text"-input nodes (CR Text
+    and similar custom nodes all shape their prompt as a plain "text"
     input), since civitai's raw embedded workflow builds prompts this
-    way rather than always giving one literal string.
+    way rather than always giving one literal string. Kept in sync with
+    filter_session.py's version of this function.
     """
     if isinstance(value, str):
         return value
@@ -150,15 +144,52 @@ def _resolve_comfy_text(nodes: dict, value) -> str:
     if node is None:
         return ""
     inputs = node.get("inputs") or {}
+    class_type = node.get("class_type")
 
-    if node.get("class_type") == "StringConcatenate":
-        a = _resolve_comfy_text(nodes, inputs.get("string_a", ""))
-        b = _resolve_comfy_text(nodes, inputs.get("string_b", ""))
-        delim = _resolve_comfy_text(nodes, inputs.get("delimiter", ""))
+    if class_type in _JOIN_NODE_KEYS:
+        key_a, key_b, key_delim = _JOIN_NODE_KEYS[class_type]
+        a = _resolve_comfy_text(nodes, inputs.get(key_a, ""))
+        b = _resolve_comfy_text(nodes, inputs.get(key_b, ""))
+        delim = inputs.get(key_delim, "")
+        delim = delim if isinstance(delim, str) else _resolve_comfy_text(nodes, delim)
         return f"{a}{delim}{b}"
+
+    if class_type == "JoinStringMulti":
+        delim = inputs.get("delimiter", "")
+        delim = delim if isinstance(delim, str) else _resolve_comfy_text(nodes, delim)
+        string_keys = sorted(
+            (k for k in inputs if k.startswith("string_")),
+            key=lambda k: int(k.rsplit("_", 1)[-1]) if k.rsplit("_", 1)[-1].isdigit() else 0,
+        )
+        parts = [_resolve_comfy_text(nodes, inputs[k]) for k in string_keys]
+        return delim.join(p for p in parts if p)
+
+    if class_type == "PreviewAny":
+        return _resolve_comfy_text(nodes, inputs.get("source", ""))
+
+    if class_type == "ImpactWildcardProcessor":
+        return str(inputs.get("populated_text") or "")
+
+    if class_type in _LITERAL_KEY_BY_CLASS:
+        val = inputs.get(_LITERAL_KEY_BY_CLASS[class_type], "")
+        return val if isinstance(val, str) else _resolve_comfy_text(nodes, val)
+
+    if class_type == "TriggerWord Toggle (LoraManager)":
+        toggles = (inputs.get("toggle_trigger_words") or {}).get("__value__") or []
+        active = [str(item.get("text", "")) for item in toggles if isinstance(item, dict) and item.get("active")]
+        return ", ".join(t for t in active if t)
 
     if "text" in inputs:
         return _resolve_comfy_text(nodes, inputs["text"])
+
+    # Generic fallback for unknown literal-text node types — if there's
+    # exactly one plain string among this node's inputs, it's almost
+    # certainly the text, whatever the key is called. Only reached via
+    # a real text-resolution chain rooted at a KSampler's positive
+    # input, so safe to guess in this specific context.
+    string_inputs = [v for v in inputs.values() if isinstance(v, str)]
+    if len(string_inputs) == 1:
+        return string_inputs[0]
 
     return ""
 
@@ -219,36 +250,104 @@ def _effective_prompt_text(record: dict) -> str:
     return _extract_comfy_prompt_text(record)
 
 
+# --- content routing filters, config-driven (see download_filters.yaml) ---
+#
+# Same condition shape as filter_session.py's filters.yaml, kept
+# deliberately compatible so both files are easy to read side by side:
+#   field:    "prompt" (free text, matched as whole words/phrases) or
+#             "modelName" (matched as a case-insensitive substring, since
+#             a model's civitai name is checked for a known-bad string,
+#             not tokenized)
+#   match:    any | all | none — how a condition's own keywords combine
+#   keywords: list of words/phrases to check for (case-insensitive)
+# A filter's top-level "match" then combines its own list of conditions
+# the same way. Filters are checked in the order they appear in the
+# YAML file; the first one that matches wins.
+DOWNLOAD_FILTERS_PATH = Path(__file__).resolve().parent.parent / "download_filters.yaml"
+
+_download_filters_cache: dict = {}
+
+
+def _apply_match(text: str, keywords: list[str], mode: str, *, substring: bool = False) -> bool:
+    if substring:
+        checks = (kw in text for kw in keywords)
+    else:
+        checks = (bool(_re.search(r"\b" + _re.escape(kw) + r"\b", text)) for kw in keywords)
+    checks = list(checks)
+    if mode == "any":
+        return any(checks)
+    if mode == "all":
+        return all(checks)
+    if mode == "none":
+        return not any(checks)
+    raise ValueError(f"unknown match mode: {mode!r} (use any/all/none)")
+
+
+def _condition_matches(prompt: str, model_name: str, cond: dict) -> bool:
+    field = cond["field"]
+    keywords = [k.lower() for k in cond["keywords"]]
+    mode = cond.get("match", "any")
+
+    if field == "prompt":
+        return _apply_match(prompt, keywords, mode)
+    if field == "modelName":
+        return _apply_match(model_name, keywords, mode, substring=True)
+    raise ValueError(f"download_filters.yaml: unsupported field {field!r} (use 'prompt' or 'modelName')")
+
+
+def _combine(results: list[bool], mode: str) -> bool:
+    if mode == "any":
+        return any(results)
+    if mode == "all":
+        return all(results)
+    if mode == "none":
+        return not any(results)
+    raise ValueError(f"unknown match mode: {mode!r} (use any/all/none)")
+
+
+def load_download_filters(force_reload: bool = False) -> list[dict]:
+    """Ordered list of {"name", "match", "conditions"} content-routing
+    filters, read from DOWNLOAD_FILTERS_PATH.
+
+    Cached by the file's mtime — cheap to call per-record during a
+    download run; only re-parses the YAML when it's actually changed.
+    Returns [] (i.e. no review-bucket routing at all) if the file
+    doesn't exist, rather than falling back to any built-in defaults —
+    filters live in the YAML now, not in code.
+    """
+    if not DOWNLOAD_FILTERS_PATH.exists():
+        return []
+
+    mtime = DOWNLOAD_FILTERS_PATH.stat().st_mtime
+    if not force_reload and _download_filters_cache.get("mtime") == mtime:
+        return _download_filters_cache["filters"]
+
+    config = yaml.safe_load(DOWNLOAD_FILTERS_PATH.read_text()) or {}
+    filters = config.get("filters", [])
+
+    _download_filters_cache["mtime"] = mtime
+    _download_filters_cache["filters"] = filters
+    return filters
+
+
 def _filter_bucket(record: dict) -> str | None:
     """Return a review bucket name if the record should be filtered,
     or None if it should proceed to normal nsfw routing.
 
-    Filters are checked in priority order — furry first, then content filters.
-    All filtered images go to flat review buckets under data_root/.
+    Filters are checked in the order they're defined in
+    download_filters.yaml; the first match wins. All filtered images
+    go to flat review buckets under data_root/. Editing which
+    keywords trigger a bucket — or adding/removing a bucket entirely —
+    is a YAML change, not a code change; see download_filters.yaml.
     """
     prompt = _effective_prompt_text(record).lower()
     model_name = (record.get("modelName") or "").lower()
-    tokens = set(_re.split(r"[,\s:|()\.\[\]]+", prompt))
 
-    if tokens & _FURRY_KEYWORDS:
-        return "furry"
-    if _BONDAGE_KEYWORDS.search(prompt):
-        return "bondage"
-    if _HORROR_KEYWORDS.search(prompt) or any(b in model_name for b in _HORROR_MODEL_BLOCKLIST):
-        return "horror"
-    if _SOLO_MALE.search(prompt) and _MASCULINE.search(prompt) and not _FEMALE_CHAR.search(prompt):
-        return "solomale"
+    for filt in load_download_filters():
+        results = [_condition_matches(prompt, model_name, cond) for cond in filt["conditions"]]
+        if _combine(results, filt.get("match", "any")):
+            return filt["name"]
     return None
-
-
-def _is_furry(record: dict) -> bool:
-    """Return True if the positive prompt contains a known furry keyword."""
-    meta = record.get("meta") or {}
-    prompt = str(meta.get("prompt") or "").lower()
-    # split on common delimiters so we match whole tokens only
-    import re
-    tokens = set(re.split(r"[,\s:|()\[\]]+", prompt))
-    return bool(tokens & _FURRY_KEYWORDS)
 
 
 # Positive prompt tokens that confirm a character is present.
@@ -888,6 +987,79 @@ def find_manifest_drift(data_root: Path) -> list[dict]:
         drifted.append({"imageId": image_id, "expected_path": expected, "found_at": found})
 
     return drifted
+
+
+def backfill_manifest_from_disk(civitai_records: list[dict], data_root: Path) -> dict:
+    """Add manifest entries for files that are already on disk under
+    data_root but aren't referenced by ANY manifest entry — e.g. an
+    interrupted run that downloaded files but got killed before its
+    next periodic manifest flush, or files that landed there some
+    other way outside run_download's own bookkeeping.
+
+    Never touches the network and never moves a file — purely adds
+    missing manifest rows, matched to civitai_records by the
+    "{modelId}_{imageId}.ext" filename pattern run_download itself
+    writes. This matters because without a manifest entry, the next
+    run_download pass doesn't know the file already exists: it
+    recomputes a destination from CURRENT filter logic (which may
+    have changed since the file was originally placed) and re-fetches
+    it from civitai, potentially into a second, different-bucket
+    location rather than reusing what's already there.
+
+    "filter" is set from the file's ACTUAL on-disk location (via
+    _bucket_from_raw_path), not recomputed from current filter logic
+    — a backfilled entry always agrees with physical reality first.
+    Run reclassify_cli.py afterward if you then want it moved to
+    match current filters.
+
+    "embedded" is set to True only if a corresponding embedded PNG is
+    actually found at png_writer.build_dest_path's expected location
+    for that record; False otherwise, so a later --embed-only run
+    knows accurately whether there's still work to do for it.
+
+    Skips (and logs) any unlinked file whose imageId isn't found in
+    civitai_records — not enough metadata to build a manifest entry
+    for it; pass a broader/combined --input if that's unexpected.
+
+    Returns {"added": n, "unmatched": n}.
+    """
+    from civitai_comfy_bridge.png_writer import build_dest_path
+
+    manifest = load_manifest(data_root)
+    records_by_id = {str(r["imageId"]): r for r in civitai_records}
+    name_pattern = _re.compile(r"^(\d+)_(\d+)$")
+
+    added = unmatched = 0
+    for path in find_unlinked_raw_files(data_root):
+        m = name_pattern.match(path.stem)
+        image_id = m.group(2) if m else None
+        rec = records_by_id.get(image_id) if image_id else None
+
+        if rec is None:
+            print(f"UNMATCHED {path.relative_to(data_root)}: no matching imageId in civitai_records", flush=True)
+            unmatched += 1
+            continue
+
+        raw_path = str(path.relative_to(data_root))
+        run_dir_name = Path(raw_path).parts[0]
+        model_id = rec.get("modelId")
+        embed_dest = build_dest_path(data_root, run_dir_name, model_id, image_id, nsfw_level=rec.get("nsfwLevel"))
+
+        manifest[image_id] = {
+            "raw_path": raw_path,
+            "modelId": model_id,
+            "nsfwLevel": rec.get("nsfwLevel"),
+            "filter": _bucket_from_raw_path(raw_path),
+            "createdAt": rec.get("createdAt"),
+            "downloaded_at": date.today().isoformat(),
+            "source_json": "",
+            "embedded": embed_dest.exists(),
+        }
+        print(f"BACKFILLED {image_id}: {raw_path} [embedded={manifest[image_id]['embedded']}]", flush=True)
+        added += 1
+
+    save_manifest(data_root, manifest)
+    return {"added": added, "unmatched": unmatched}
 
 
 def repair_manifest_raw_paths(data_root: Path) -> dict:

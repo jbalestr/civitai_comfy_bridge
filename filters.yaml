@@ -39,7 +39,7 @@ filters:
     conditions:
       - field: prompt
         match: any
-        keywords: [ blood,bleed,bleeding,bloody]
+        keywords: [ blood, bleed,bleeding,bloody, blood on pussy]
 
 
 
