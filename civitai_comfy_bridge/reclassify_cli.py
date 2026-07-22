@@ -102,12 +102,12 @@ def _load_records(input_path: Path) -> list[dict]:
             raise SystemExit(f"no .json files found in {input_path}")
         by_id: dict[str, dict] = {}
         for jf in json_files:
-            for rec in json.loads(jf.read_text()):
+            for rec in json.loads(jf.read_text(encoding="utf-8")):
                 by_id[str(rec["imageId"])] = rec
         print(f"loaded {len(by_id)} unique record(s) from {len(json_files)} file(s) in {input_path}", flush=True)
         return list(by_id.values())
 
-    records = json.loads(input_path.read_text())
+    records = json.loads(input_path.read_text(encoding="utf-8"))
     print(f"loaded {len(records)} record(s) from {input_path}", flush=True)
     return records
 

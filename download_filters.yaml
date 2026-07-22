@@ -22,6 +22,24 @@
 # bare "girl"/"girls" keyword — list the numbered forms you care about
 # explicitly, as the solomale filter below does.
 
+# Checked FIRST, before every filter below and before has_character:
+# if the prompt is written mostly in Chinese/Japanese/Korean script,
+# route straight to this bucket and skip all English keyword matching
+# entirely — matching an English word list against CJK text is
+# unreliable in both directions (missing real matches, and match
+# results that don't mean what the keyword list assumes), so rather
+# than extend every list below to also cover every language, CJK-heavy
+# prompts just get set aside here for direct human review instead.
+# min_ratio is the fraction of the prompt's non-whitespace characters
+# that must fall in a CJK unicode range to route here — 0.15 means a
+# prompt that's meaningfully written in CJK, not just one borrowed
+# word or an artist's name in an otherwise-English prompt. Raise it if
+# mixed-language prompts you want kept out of here start showing up;
+# lower it if CJK prompts are still slipping through to nocharacter/soft.
+cjk_bucket:
+  name: chinese
+  min_ratio: 0.15
+
 filters:
   - name: furry
     match: any
@@ -112,3 +130,232 @@ filters:
           - lady
           - ladies
           - waifu
+
+# Used by _has_character (the "nocharacter" review bucket) — separate
+# from the filters above, checked directly against the prompt text,
+# word-boundary matched, case-insensitive. A character_tokens match
+# means "keep, this has a character" regardless of any landscape_tokens
+# also present (an outdoor portrait mentions its setting too).
+#
+# Covers both booru-tag prompts ("1girl", "solo") and prose captions,
+# which usually describe a subject through appearance/clothing/pose
+# instead of an explicit gender/character tag ("20 years old",
+# "toothy smile", "blue dress", "standing", "her gaze").
+character_tokens_strict:
+  # numeric-prefixed and bare headcount/gender tags
+  - girl
+  - girls
+  - 1girl
+  - 2girls
+  - 3girls
+  - 4girls
+  - 5girls
+  - 6girls
+  - boy
+  - boys
+  - 1boy
+  - 2boys
+  - 3boys
+  - woman
+  - women
+  - man
+  - men
+  - solo
+  - male
+  - female
+  - lady
+  - gentleman
+  - guy
+  - gal
+  - lad
+  - lass
+  # generic character/archetype words
+  - waifu
+  - husbando
+  - mecha
+  - character
+  - portrait
+  - cyborg
+  - human
+  - people
+  - crowd
+  - person
+  - face
+  - years old
+  # titles and roles
+  - princess
+  - prince
+  - queen
+  - king
+  - goddess
+  - god
+  - warrior
+  - knight
+  - vampire
+  - witch
+  - wizard
+  - mage
+  - ninja
+  - samurai
+  - sister
+  - brother
+  - mother
+  - father
+  - daughter
+  - son
+  # Japanese character archetypes
+  - yuki onna
+  - onmyoji
+  - geisha
+  - kunoichi
+  - shrine maiden
+  - miko
+
+# CJK gender/character characters — matched as plain substrings, NOT
+# word-boundary matched like every other list here. Chinese/Japanese
+# text has no spaces between characters, so \b (which needs a
+# transition between a "word" and "non-word" character) never finds a
+# boundary around a CJK character sandwiched between other CJK
+# characters — every \b-based keyword in this file simply can't match
+# CJK prompts at all. Always counts as strict (same as
+# character_tokens_strict — no animal_tokens suppression), matching
+# this project's original behaviour for these two characters.
+character_tokens_cjk:
+  - "女"  # woman/girl
+  - "男"  # man/boy
+
+# Ambiguous prose-caption signals — needed to catch subjects described
+# through pronouns/appearance/clothing rather than an explicit
+# gender/character word ("her gaze", "blue dress", "toothy smile"),
+# but these are just as often used to describe an animal subject
+# ("her fur", "wearing a hawaiian shirt"). A match here ONLY counts
+# as "has_character" if animal_tokens finds NOTHING in the same
+# prompt — see _has_character. Pose verbs (standing/sitting/kneeling/
+# posing/smiling/smirking) were tried here and dropped entirely, even
+# with the animal-token guard: they fire on literally any illustrated
+# subject or scene (a bear sitting in a chair, a penguin standing on
+# a beach, a sun in a meme comic) and added little that pronouns/
+# appearance/clothing don't already cover for genuine human prose.
+character_tokens_broad:
+  # pronouns — prose captions lean on these instead of tags
+  - she
+  - her
+  - hers
+  - herself
+  - he
+  - his
+  - him
+  - himself
+  # appearance/clothing — describing what someone's wearing or how
+  # they look implies a subject even with no gender word at all
+  - dress
+  - gown
+  - skirt
+  - blouse
+  - shirt
+  - jacket
+  - kimono
+  - robe
+  - armor
+  - uniform
+  - freckles
+  - tan skin
+  - ponytail
+  - bangs
+  - braid
+
+# Species/creature words. A character_tokens_broad match is suppressed
+# (not treated as "has_character") when one of these also appears in
+# the same prompt and no character_tokens_strict word is present —
+# i.e. "her fur" or "wearing a hawaiian shirt" describing a bear or
+# penguin doesn't count as a character, but "a girl with her pet fox"
+# still does (the strict "girl" wins regardless of "fox" being here
+# too). Extend this list as new species/creatures turn up misfiring
+# in either direction — it's the main lever for this behaviour.
+animal_tokens:
+  - bear
+  - penguin
+  - rabbit
+  - bunny
+  - fox
+  - wolf
+  - cat
+  - kitten
+  - dog
+  - puppy
+  - deer
+  - owl
+  - horse
+  - pony
+  - unicorn
+  - pegasus
+  - lion
+  - tiger
+  - cheetah
+  - leopard
+  - panther
+  - snake
+  - bird
+  - eagle
+  - hawk
+  - crow
+  - raven
+  - parrot
+  - mouse
+  - rat
+  - squirrel
+  - raccoon
+  - otter
+  - seal
+  - dolphin
+  - whale
+  - shark
+  - dragon
+  - griffin
+  - phoenix
+  - kitsune
+  - koala
+  - panda
+  - elephant
+  - giraffe
+  - zebra
+  - monkey
+  - gorilla
+  - ape
+  - frog
+  - lizard
+  - dinosaur
+  - chicken
+  - duck
+  - goose
+  - sheep
+  - goat
+  - cow
+  - pig
+  - hedgehog
+  - hamster
+  - ferret
+  - badger
+  - skunk
+  - weasel
+
+# Only acted on when character_tokens finds nothing at all — signals
+# a pure environment/object shot with no subject described.
+landscape_tokens:
+  - landscape
+  - scenery
+  - architecture
+  - building
+  - interior
+  - cityscape
+  - room
+  - still life
+  - scenic
+  - nature
+  - background
+  - view
+  - hills
+  - station
+  - environment
+  - object
+  - props

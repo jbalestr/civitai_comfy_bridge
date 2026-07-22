@@ -81,7 +81,19 @@ _DEFAULT_EXTENSION = ".bin"
 # it means the manifest entry's original civitai record couldn't be
 # found (e.g. an older pull's JSON wasn't included in --input), so
 # there's nothing to recompute a bucket from. See orphaned_summary_rows.
-_REVIEW_BUCKETS = {"furry", "bondage", "horror", "solomale", "nocharacter", "noprompt", "orphaned"}
+#
+# Computed from download_filters.yaml's filter names + cjk_bucket's
+# name (rather than a hardcoded list) so a bucket rename/addition in
+# the YAML can't silently drift out of sync with this — see
+# _load_filters_config for caching behaviour.
+def _review_bucket_names() -> set[str]:
+    config = _load_filters_config()
+    names = {f["name"] for f in config.get("filters", [])}
+    cjk_cfg = config.get("cjk_bucket")
+    if cjk_cfg:
+        names.add(cjk_cfg.get("name", "chinese"))
+    names |= {"nocharacter", "noprompt", "orphaned"}
+    return names
 
 
 def _bucket_from_raw_path(raw_path_str: str) -> str:
@@ -265,7 +277,37 @@ def _effective_prompt_text(record: dict) -> str:
 # YAML file; the first one that matches wins.
 DOWNLOAD_FILTERS_PATH = Path(__file__).resolve().parent.parent / "download_filters.yaml"
 
-_download_filters_cache: dict = {}
+_filters_config_cache: dict = {}
+
+
+_ANGLE_BRACKET_TAG = _re.compile(r'<[^>]*>')
+
+
+def _normalize_for_matching(text: str) -> str:
+    """Lowercase, strip <...> tags, and turn underscores into spaces
+    before keyword matching.
+
+    <...> tags (<lora:creepy:1>, <lyco:...>, <hypernetwork:...>) are
+    ComfyUI/A1111 syntax naming a MODEL FILE to load, not prompt
+    content — a LoRA can be named anything, so its filename can
+    contain any English word by coincidence (a LoRA literally named
+    "creepy" applied to an ordinary portrait once matched the horror
+    filter this way). Stripping the tag out entirely, rather than
+    treating whatever's inside it as prompt text, avoids that class of
+    false positive across every keyword list at once.
+
+    Underscore-joined tags ("ribbon_tied_blouse", "looking_at_viewer"
+    — the raw Danbooru/e621 tag convention) would otherwise silently
+    defeat every \\b-bounded keyword check: "_" is a regex word
+    character, so \\bblouse\\b can't match inside "tied_blouse" —
+    there's no boundary between "_" and "b". Turning underscores into
+    spaces first fixes this for every keyword list (review-bucket
+    filters and character_tokens/landscape_tokens alike) at the
+    source, rather than needing every keyword in the YAML to
+    anticipate both a spaced and an underscored form.
+    """
+    text = _ANGLE_BRACKET_TAG.sub(" ", text)
+    return text.lower().replace("_", " ")
 
 
 def _apply_match(text: str, keywords: list[str], mode: str, *, substring: bool = False) -> bool:
@@ -305,77 +347,96 @@ def _combine(results: list[bool], mode: str) -> bool:
     raise ValueError(f"unknown match mode: {mode!r} (use any/all/none)")
 
 
-def load_download_filters(force_reload: bool = False) -> list[dict]:
-    """Ordered list of {"name", "match", "conditions"} content-routing
-    filters, read from DOWNLOAD_FILTERS_PATH.
-
-    Cached by the file's mtime — cheap to call per-record during a
-    download run; only re-parses the YAML when it's actually changed.
-    Returns [] (i.e. no review-bucket routing at all) if the file
-    doesn't exist, rather than falling back to any built-in defaults —
-    filters live in the YAML now, not in code.
+def _load_filters_config(force_reload: bool = False) -> dict:
+    """The full parsed contents of DOWNLOAD_FILTERS_PATH, cached by the
+    file's mtime — cheap to call per-record; only re-parses the YAML
+    when it's actually changed. Returns {} if the file doesn't exist,
+    rather than falling back to any built-in defaults — everything
+    tunable here lives in the YAML now, not in code.
     """
     if not DOWNLOAD_FILTERS_PATH.exists():
-        return []
+        return {}
 
     mtime = DOWNLOAD_FILTERS_PATH.stat().st_mtime
-    if not force_reload and _download_filters_cache.get("mtime") == mtime:
-        return _download_filters_cache["filters"]
+    if not force_reload and _filters_config_cache.get("mtime") == mtime:
+        return _filters_config_cache["config"]
 
-    config = yaml.safe_load(DOWNLOAD_FILTERS_PATH.read_text()) or {}
-    filters = config.get("filters", [])
+    config = yaml.safe_load(DOWNLOAD_FILTERS_PATH.read_text(encoding="utf-8")) or {}
+    _filters_config_cache["mtime"] = mtime
+    _filters_config_cache["config"] = config
+    return config
 
-    _download_filters_cache["mtime"] = mtime
-    _download_filters_cache["filters"] = filters
-    return filters
+
+def load_download_filters(force_reload: bool = False) -> list[dict]:
+    """Ordered list of {"name", "match", "conditions"} content-routing
+    filters, read from DOWNLOAD_FILTERS_PATH's "filters" key. See
+    _load_filters_config for caching behaviour.
+    """
+    return _load_filters_config(force_reload).get("filters", [])
+
+
+
+_CJK_CHAR = _re.compile(
+    r'[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7a3]'
+)
+
+
+def _cjk_ratio(text: str) -> float:
+    """Fraction of TEXT's non-whitespace characters that fall in a
+    CJK (Chinese/Japanese/Korean) unicode range. Covers CJK Unified
+    Ideographs (+ Extension A), Hiragana, Katakana, and Hangul
+    syllables — the ranges an actual Chinese/Japanese/Korean sentence
+    is built from, as opposed to a single borrowed word or an
+    artist's name sitting in an otherwise-English prompt.
+    """
+    non_ws = [c for c in text if not c.isspace()]
+    if not non_ws:
+        return 0.0
+    cjk_count = sum(1 for c in non_ws if _CJK_CHAR.match(c))
+    return cjk_count / len(non_ws)
 
 
 def _filter_bucket(record: dict) -> str | None:
     """Return a review bucket name if the record should be filtered,
     or None if it should proceed to normal nsfw routing.
 
-    Filters are checked in the order they're defined in
-    download_filters.yaml; the first match wins. All filtered images
-    go to flat review buckets under data_root/. Editing which
-    keywords trigger a bucket — or adding/removing a bucket entirely —
-    is a YAML change, not a code change; see download_filters.yaml.
-    """
-    prompt = _effective_prompt_text(record).lower()
-    model_name = (record.get("modelName") or "").lower()
+    Checks, in order:
+      1. cjk_bucket (download_filters.yaml) — if the prompt is
+         written mostly in Chinese/Japanese/Korean script, route
+         straight there and skip everything else. Every filter below
+         is an English keyword list; matching those against CJK text
+         is unreliable in both directions (see character_tokens_cjk's
+         history), so rather than extend every list to also cover
+         every language, CJK-heavy prompts just get set aside for
+         direct human review instead.
+      2. The furry/bondage/horror/solomale filters, in the order
+         they're defined in download_filters.yaml — first match wins.
 
-    for filt in load_download_filters():
+    All filtered images go to flat review buckets under data_root/.
+    Editing which keywords trigger a bucket, tuning the CJK
+    threshold, or adding/removing a bucket entirely is a YAML change,
+    not a code change; see download_filters.yaml.
+    """
+    prompt_raw = _effective_prompt_text(record)
+    config = _load_filters_config()
+
+    cjk_cfg = config.get("cjk_bucket")
+    if cjk_cfg and _cjk_ratio(prompt_raw) >= cjk_cfg.get("min_ratio", 0.15):
+        return cjk_cfg.get("name", "chinese")
+
+    prompt = _normalize_for_matching(prompt_raw)
+    model_name = _normalize_for_matching(record.get("modelName") or "")
+
+    for filt in config.get("filters", []):
         results = [_condition_matches(prompt, model_name, cond) for cond in filt["conditions"]]
         if _combine(results, filt.get("match", "any")):
             return filt["name"]
     return None
 
 
-# Positive prompt tokens that confirm a character is present.
-# A match here means the image is kept regardless of landscape keywords.
-_CHARACTER_TOKENS = _re.compile(
-    # numeric prefix variants: 1girl, 2boys, 3women etc.
-    r'\b\d*(?:girl|boy|girls|boys|woman|women|man|men)\b' +
-    r'|\b(solo|' +
-    # gender/age
-    r'male|female|lady|gentleman|guy|gal|lad|lass|' +
-    # anime/game archetypes
-    r'waifu|husbando|mecha|character|portrait|cyborg|human|people|crowd|person|face|' +
-    # titles and roles (female + male)
-    r'princess|prince|queen|king|goddess|god|warrior|knight|' +
-    r'vampire|witch|wizard|mage|ninja|samurai|' +
-    r'sister|brother|mother|father|daughter|son|' +
-    # Japanese character archetypes
-    r'yuki.onna|onmyoji|geisha|kunoichi|shrine.maiden|miko)\b' +
-    # Chinese woman/man characters (no word boundary needed)
-    r'|[女男]'
-)
-
-# Tokens that indicate a characterless environment/scene.
-# Only acted on when _CHARACTER_TOKENS is absent.
-_LANDSCAPE_TOKENS = _re.compile(
-    r'\b(landscape|scenery|architecture|building|interior|cityscape|room|' +
-    r'still.life|scenic|nature|background|view|hills|station|environment|object|props)\b'
-)
+# _has_character's word lists (character_tokens / landscape_tokens) now
+# live in download_filters.yaml alongside the review-bucket filters —
+# see load_download_filters and _has_character below.
 
 
 def _has_prompt(record: dict) -> bool:
@@ -387,18 +448,52 @@ def _has_prompt(record: dict) -> bool:
 
 
 def _has_character(record: dict) -> bool:
-    """Return True if the positive prompt positively confirms a character is
-    present. Returns False if prompt is missing or contains no character tokens.
+    """Return True if the positive prompt positively confirms a
+    character is present. Returns False if the prompt is missing, or
+    matches nothing in character_tokens_strict/_broad (from
+    download_filters.yaml).
+
+    Uses three word lists rather than one:
+      - character_tokens_strict: unambiguous human/character words
+        ("1girl", "solo", "princess", "knight"). A match here always
+        counts, regardless of anything else in the prompt.
+      - character_tokens_broad: pronouns/appearance/clothing words
+        needed to catch prose captions with no explicit gender/
+        character tag ("her gaze", "toothy smile", "blue dress") —
+        but these are just as often used to describe an animal
+        subject ("her fur", "wearing a hawaiian shirt").
+      - animal_tokens: species/creature words. A broad match is only
+        treated as "has_character" if NONE of these are also present
+        — so "a bear sitting in a chair" or "penguin wearing a
+        hawaiian shirt" correctly comes back False, while "Starfire...
+        her armor" (no animal word at all) still comes back True.
+        A strict match always overrides this guard: "a girl with her
+        pet fox" is still a character, "fox" notwithstanding.
+      - character_tokens_cjk: CJK gender/character characters (女/男),
+        matched as plain substrings rather than word-boundary matched
+        — Chinese/Japanese text has no spaces between characters, so
+        \\b can never find a boundary around one CJK character
+        sandwiched between others. Always counts, same as strict.
     """
     prompt = _effective_prompt_text(record)
-
     if not prompt.strip():
         return False
 
-    if _CHARACTER_TOKENS.search(prompt):
-        return True
+    text = _normalize_for_matching(prompt)
+    config = _load_filters_config()
+    strict = [t.lower() for t in config.get("character_tokens_strict", [])]
+    broad = [t.lower() for t in config.get("character_tokens_broad", [])]
+    animals = [t.lower() for t in config.get("animal_tokens", [])]
+    cjk = [t.lower() for t in config.get("character_tokens_cjk", [])]
 
+    if _apply_match(text, strict, "any"):
+        return True
+    if _apply_match(text, cjk, "any", substring=True):
+        return True
+    if _apply_match(text, broad, "any") and not _apply_match(text, animals, "any"):
+        return True
     return False
+
 
 
 def _extension_from_url(url: str) -> str:
@@ -420,7 +515,7 @@ def load_manifest(data_root: Path) -> dict:
     path = data_root / MANIFEST_FILE
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             # Corrupt/truncated manifest (e.g. killed mid-write, though
             # save_manifest's atomic replace should make that rare) —
@@ -437,7 +532,7 @@ def save_manifest(data_root: Path, manifest: dict) -> None:
     """
     data_root.mkdir(parents=True, exist_ok=True)
     tmp_path = data_root / (MANIFEST_FILE + ".tmp")
-    tmp_path.write_text(json.dumps(manifest, indent=2))
+    tmp_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     tmp_path.replace(data_root / MANIFEST_FILE)
 
 
@@ -796,7 +891,7 @@ def apply_summary(summary_rows: list[dict], data_root: Path) -> dict:
 
         old_run_dir_name = Path(entry["raw_path"]).parts[0]
 
-        if target_bucket in _REVIEW_BUCKETS:
+        if target_bucket in _review_bucket_names():
             new_dest = data_root / target_bucket / current_path.name
             new_run_dir_name = target_bucket
         else:

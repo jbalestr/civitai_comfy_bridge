@@ -123,7 +123,7 @@ def run(input_path: Path, data_root: Path) -> None:
     whole batch) — same per-item resilience principle used throughout
     portfolio-explorer's own pipeline (scanner.py, build_index.py).
     """
-    civitai_records = json.loads(input_path.read_text())
+    civitai_records = json.loads(input_path.read_text(encoding="utf-8"))
     print(f"loaded {len(civitai_records)} records from {input_path}", flush=True)
 
     downloader.run_download(civitai_records, data_root)
@@ -146,7 +146,7 @@ def main() -> None:
     if args.embed_only and args.download_only:
         parser.error("--embed-only and --download-only are mutually exclusive")
 
-    civitai_records = json.loads(args.input.read_text())
+    civitai_records = json.loads(args.input.read_text(encoding="utf-8"))
     print(f"loaded {len(civitai_records)} records from {args.input}", flush=True)
 
     if not args.embed_only:
